@@ -108,8 +108,9 @@ export function registerRoomSocket(io: Server): void {
     socket.on('leave_room', async (payload: { roomId: string }) => {
       const user = connectedUsers.get(socket.id);
       if (user) {
-        await leaveRoom(socket, io, payload.roomId, user);
+        // Clear roomId BEFORE leaveRoom so getRoomMembers excludes this user
         user.roomId = undefined;
+        await leaveRoom(socket, io, payload.roomId, user);
       }
     });
 
@@ -117,9 +118,13 @@ export function registerRoomSocket(io: Server): void {
     socket.on('disconnect', async () => {
       const user = connectedUsers.get(socket.id);
       if (user?.roomId) {
-        await leaveRoom(socket, io, user.roomId, user);
+        const roomId = user.roomId;
+        // Remove from map BEFORE leaveRoom so getRoomMembers excludes this user
+        connectedUsers.delete(socket.id);
+        await leaveRoom(socket, io, roomId, user);
+      } else {
+        connectedUsers.delete(socket.id);
       }
-      connectedUsers.delete(socket.id);
       console.log(`Socket disconnected: ${socket.id}`);
     });
   });
