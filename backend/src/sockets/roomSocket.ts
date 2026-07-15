@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { db, ROOMS_COLLECTION, MESSAGES_COLLECTION } from '../config/firebase';
 import { verifySocketToken } from '../middleware/auth';
 import { SocketUser, JoinRoomPayload, SendMessagePayload } from '../types';
+import { eventProcessor } from '../pipeline/eventProcessor';
 
 // In-memory presence map: socketId → SocketUser
 const connectedUsers = new Map<string, SocketUser>();
@@ -54,6 +55,8 @@ export function registerRoomSocket(io: Server): void {
           memberCount: members.length,
         });
 
+        eventProcessor.push({ type: 'join', timestamp: Date.now(), roomId: payload.roomId, userId: uid });
+
         console.log(`${name} joined room ${payload.roomId}`);
       } catch (err) {
         socket.emit('error', { message: 'Authentication failed' });
@@ -62,6 +65,7 @@ export function registerRoomSocket(io: Server): void {
 
     // ── send_message ───────────────────────────────────────────────────────
     socket.on('send_message', async (payload: SendMessagePayload) => {
+      const eventStart = Date.now();
       try {
         const { uid, name } = await verifySocketToken(payload.token);
         const user = connectedUsers.get(socket.id);
@@ -99,6 +103,14 @@ export function registerRoomSocket(io: Server): void {
           ...message,
           createdAt: message.createdAt.toISOString(),
         });
+
+        eventProcessor.push({
+          type: 'message',
+          timestamp: eventStart,
+          roomId: payload.roomId,
+          userId: uid,
+          latencyMs: Date.now() - eventStart,
+        });
       } catch (err) {
         socket.emit('error', { message: 'Failed to send message' });
       }
@@ -108,9 +120,11 @@ export function registerRoomSocket(io: Server): void {
     socket.on('leave_room', async (payload: { roomId: string }) => {
       const user = connectedUsers.get(socket.id);
       if (user) {
+        const { uid, roomId: userRoomId } = user;
         // Clear roomId BEFORE leaveRoom so getRoomMembers excludes this user
         user.roomId = undefined;
         await leaveRoom(socket, io, payload.roomId, user);
+        eventProcessor.push({ type: 'leave', timestamp: Date.now(), roomId: payload.roomId, userId: uid });
       }
     });
 
@@ -119,9 +133,11 @@ export function registerRoomSocket(io: Server): void {
       const user = connectedUsers.get(socket.id);
       if (user?.roomId) {
         const roomId = user.roomId;
+        const uid = user.uid;
         // Remove from map BEFORE leaveRoom so getRoomMembers excludes this user
         connectedUsers.delete(socket.id);
         await leaveRoom(socket, io, roomId, user);
+        eventProcessor.push({ type: 'disconnect', timestamp: Date.now(), roomId, userId: uid });
       } else {
         connectedUsers.delete(socket.id);
       }
